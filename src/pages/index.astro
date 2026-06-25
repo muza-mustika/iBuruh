@@ -1,0 +1,791 @@
+---
+import Layout from '../layouts/Layout.astro';
+
+// API endpoint for database operations
+const DB = Astro.locals.runtime?.env?.DB || Astro.locals.env?.DB;
+
+// Fetch categories and subcategories from database
+let categories: string[] = [];
+let subcategories: Record<string, string[]> = {};
+
+try {
+  if (DB) {
+    const workers = await DB.prepare('SELECT DISTINCT skill_category, skill_subcategory FROM workers WHERE available = 1').all();
+    const workerList = workers.results as any[];
+    
+    categories = [...new Set(workerList.map(w => w.skill_category))];
+    
+    workerList.forEach(w => {
+      if (!subcategories[w.skill_category]) {
+        subcategories[w.skill_category] = [];
+      }
+      if (w.skill_subcategory && !subcategories[w.skill_category].includes(w.skill_subcategory)) {
+        subcategories[w.skill_category].push(w.skill_subcategory);
+      }
+    });
+  }
+} catch (error) {
+  console.error('Error fetching categories:', error);
+}
+
+// Pass data to client
+const categoriesData = JSON.stringify(categories);
+const subcategoriesData = JSON.stringify(subcategories);
+---
+
+<Layout title="Pesan Buruh">
+	<div class="app">
+		<header class="app-header">
+			<div class="row">
+				<div class="brand">
+					<div class="mark">
+						<i class="fas fa-hard-hat"></i>
+					</div>
+					<div class="text">
+						iBuruh
+						<small>Pesan Jasa Buruh</small>
+					</div>
+				</div>
+				<div class="status-text-tag">
+					<div class="dot live"></div>
+					<span id="statusText">Siap</span>
+				</div>
+			</div>
+		</header>
+
+		<main class="app-body">
+			<div class="empty-state" id="emptyState">
+				<div class="ring">
+					<i class="fas fa-hard-hat"></i>
+				</div>
+				<div class="title">Pesan Jasa Buruh</div>
+				<div class="sub">Silakan filter untuk mencari buruh yang tersedia sesuai kebutuhan Anda</div>
+			</div>
+
+			<!-- GLOBAL SUMMARY -->
+			<div class="global-summary" id="globalSummary">
+				<div class="summary-row">
+					<span class="label">Total Biaya</span>
+					<span class="total" id="globalTotal">Rp 0</span>
+				</div>
+				<div class="summary-details" id="globalDetails">
+					<span class="item">📦 <strong id="batchCount">0</strong> batch</span>
+					<span class="item">👷 <strong id="workerCount">0</strong> buruh</span>
+					<span class="item">📅 <strong id="dayCount">0</strong> hari</span>
+				</div>
+			</div>
+
+			<!-- BATCH LIST -->
+			<div class="batch-container" id="batchContainer">
+				<div id="batchList"></div>
+			</div>
+
+			<!-- ADD BATCH BUTTON -->
+			<div class="add-batch-section" id="addBatchSection">
+				<button class="btn-add-batch" id="addBatchBtn">
+					<i class="fas fa-plus-circle"></i> Tambah Pencarian Lain
+				</button>
+			</div>
+		</main>
+	</div>
+
+	<!-- FLOATING BUTTON STACK -->
+	<div class="fab-stack">
+		<div class="fab-stack-inner">
+			<div class="fab-price-tag" id="fabPriceTag">Rp 0</div>
+			<button class="fab fab-secondary" id="fabReset" aria-label="Reset">
+				<i class="fas fa-undo"></i>
+			</button>
+			<button class="fab fab-primary" id="fabMain" aria-label="Aksi utama">
+				<i class="fas fa-sliders-h" id="fabMainIcon"></i>
+				<span class="fab-count" id="fabCount">0</span>
+			</button>
+		</div>
+	</div>
+
+	<!-- FILTER POPUP -->
+	<div class="popup-full" id="filterPopup">
+		<div class="popup-full-head">
+			<div class="ptitle">Cari Buruh</div>
+			<button class="pclose" id="closePopupBtn"><i class="fas fa-xmark"></i></button>
+		</div>
+		<div class="popup-full-scroll">
+			<!-- Content will be rendered by JavaScript -->
+		</div>
+	</div>
+
+	<!-- POPUP FAB STACK -->
+	<div class="popup-fab-stack" id="popupFabStack" style="display:none;">
+		<button class="popup-fab popup-fab-go" id="applyFilterBtn" aria-label="Terapkan">
+			<i class="fas fa-check"></i>
+		</button>
+		<button class="popup-fab popup-fab-cancel" id="cancelFilterBtn" aria-label="Batal">
+			<i class="fas fa-xmark"></i>
+		</button>
+	</div>
+
+	<!-- SUCCESS OVERLAY -->
+	<div class="success-overlay" id="successOverlay">
+		<div class="success-card">
+			<div class="check-circle"><i class="fas fa-check"></i></div>
+			<div class="stitle">Pesanan Berhasil Dibuat</div>
+			<div class="ssub" id="successDesc">Pesanan berhasil dibuat.</div>
+			<div class="order-id" id="successOrderId">P001</div>
+			<button class="btn-done" id="closeSuccessBtn">Selesai</button>
+		</div>
+	</div>
+
+	<div class="toast-container" id="toastContainer"></div>
+
+	<script define:vars={{ categoriesData, subcategoriesData }}>
+		// Parse server data
+		const categories = JSON.parse(categoriesData);
+		const subcategories = JSON.parse(subcategoriesData);
+
+		// Global state
+		let state = {
+			workers: [],
+			batches: [],
+			currentFilter: null,
+			sessionId: null,
+			temporaryBookings: [],
+			categories: categories,
+			subcategories: subcategories,
+			isPopupOpen: false,
+			selectedCategory: categories[0] || '',
+			selectedSubcategory: subcategories[categories[0]]?.[0] || '',
+			selectedDate: '',
+			selectedDuration: '8',
+			selectedJumlah: 1,
+		};
+
+		// Generate unique session ID
+		function generateSessionId() {
+			return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
+		}
+
+		// Generate filter hash
+		function generateFilterHash(filter) {
+			const str = JSON.stringify(filter);
+			let hash = 0;
+			for (let i = 0; i < str.length; i++) {
+				const char = str.charCodeAt(i);
+				hash = ((hash << 5) - hash) + char;
+				hash = hash & hash;
+			}
+			return hash.toString(36);
+		}
+
+		// Initialize session
+		function initSession() {
+			state.sessionId = localStorage.getItem('iburuh_session_id');
+			if (!state.sessionId) {
+				state.sessionId = generateSessionId();
+				localStorage.setItem('iburuh_session_id', state.sessionId);
+			}
+		}
+
+		// API calls
+		async function fetchWorkers(filter = {}) {
+			const params = new URLSearchParams();
+			if (filter.date) params.append('date', filter.date);
+			if (filter.skillCategory) params.append('skill_category', filter.skillCategory);
+			if (filter.skillSubcategory) params.append('skill_subcategory', filter.skillSubcategory);
+			if (filter.startTime) params.append('start_time', filter.startTime);
+			if (filter.duration) params.append('duration', filter.duration);
+			if (filter.jumlah) params.append('jumlah', filter.jumlah);
+
+			const response = await fetch(`/api/workers?${params}`);
+			if (!response.ok) throw new Error('Failed to fetch workers');
+			return response.json();
+		}
+
+		async function lockWorkers(filter, workers) {
+			const filterHash = generateFilterHash(filter);
+			const workerIds = workers.map(w => w.id);
+			
+			const response = await fetch('/api/workers/lock', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					session_id: state.sessionId,
+					filter_hash: filterHash,
+					filter_params: filter,
+					worker_ids: workerIds,
+				}),
+			});
+			
+			if (!response.ok) throw new Error('Failed to lock workers');
+			return response.json();
+		}
+
+		async function releaseWorkers(filterHash = null) {
+			const response = await fetch('/api/workers/release', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					session_id: state.sessionId,
+					filter_hash: filterHash,
+				}),
+			});
+			
+			if (!response.ok) throw new Error('Failed to release workers');
+			return response.json();
+		}
+
+		async function createBooking(workerId, bookingData) {
+			const response = await fetch('/api/bookings', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					worker_id: workerId,
+					session_id: state.sessionId,
+					...bookingData,
+				}),
+			});
+			
+			if (!response.ok) throw new Error('Failed to create booking');
+			return response.json();
+		}
+
+		// UI Functions
+		function showToast(type, msg) {
+			const container = document.getElementById('toastContainer');
+			const toast = document.createElement('div');
+			toast.className = `toast ${type}`;
+			const icons = { 
+				success:'<i class="fas fa-check-circle"></i>', 
+				error:'<i class="fas fa-times-circle"></i>', 
+				warning:'<i class="fas fa-exclamation-triangle"></i>', 
+				info:'<i class="fas fa-info-circle"></i>' 
+			};
+			toast.innerHTML = `
+				<span class="icon">${icons[type] || icons.info}</span>
+				<span class="msg">${msg}</span>
+				<span class="close" onclick="this.parentElement.remove()">✕</span>
+			`;
+			container.appendChild(toast);
+			setTimeout(() => {
+				toast.style.opacity = '0';
+				toast.style.transform = 'translateY(16px)';
+				setTimeout(() => toast.remove(), 280);
+			}, 3200);
+		}
+
+		function formatNumber(num) {
+			if (!num) return '0';
+			return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+		}
+
+		function formatDate(dateStr) {
+			const d = new Date(dateStr + 'T00:00:00');
+			return d.toLocaleDateString('id-ID', { day:'numeric', month:'short' });
+		}
+
+		function updateGlobalSummary() {
+			let totalBiaya = 0;
+			let totalWorkers = 0;
+			let totalDays = 0;
+
+			state.batches.forEach(batch => {
+				if (batch.workers && Array.isArray(batch.workers)) {
+					totalBiaya += batch.workers.reduce((sum, w) => sum + (w.hourly_rate * batch.duration), 0);
+					totalWorkers += batch.workers.length;
+					totalDays += 1; // Each batch is 1 day
+				}
+			});
+
+			document.getElementById('globalTotal').textContent = `Rp ${formatNumber(totalBiaya)}`;
+			document.getElementById('batchCount').textContent = state.batches.length;
+			document.getElementById('workerCount').textContent = totalWorkers;
+			document.getElementById('dayCount').textContent = totalDays;
+		}
+
+		function renderBatches() {
+			const hasItems = state.batches.length > 0;
+
+			document.getElementById('globalSummary').classList.toggle('has-items', hasItems);
+			document.getElementById('batchContainer').classList.toggle('has-items', hasItems);
+			document.getElementById('addBatchSection').classList.toggle('has-items', hasItems);
+			document.getElementById('emptyState').style.display = hasItems ? 'none' : 'flex';
+
+			if (!hasItems) {
+				document.getElementById('batchList').innerHTML = '';
+				updateGlobalSummary();
+				updateFabMain();
+				return;
+			}
+
+			let html = '';
+
+			state.batches.forEach((batch, idx) => {
+				if (!batch.workers || !Array.isArray(batch.workers)) return;
+				const subtotal = batch.workers.reduce((sum, w) => sum + (w.hourly_rate * batch.duration), 0);
+
+				html += `
+					<div class="batch-item fade-in">
+						<div class="batch-head">
+							<div class="batch-info">
+								<div class="label">
+									Batch #${idx + 1}
+									<span class="badge">${batch.skill_subcategory}</span>
+								</div>
+								<div class="detail">
+									<span>📅 ${formatDate(batch.date)}</span>
+									<span>⏱ ${batch.duration} jam</span>
+									<span>👥 ${batch.workers.length} buruh</span>
+								</div>
+							</div>
+							<div class="batch-actions">
+								<button class="btn-remove" onclick="removeBatch(${idx})" title="Hapus">
+									<i class="fas fa-trash"></i>
+								</button>
+							</div>
+						</div>
+						<div class="batch-workers">
+							${batch.workers.map((w, wi) => `
+								<div class="w-item">
+									<span class="w-rank">#${wi + 1}</span>
+									<span class="w-name">${w.name}</span>
+									<span class="w-rating"><i class="fas fa-star" style="font-size:9px;color:var(--warn);"></i> ${w.rating.toFixed(1)}</span>
+									<span class="w-price">Rp ${formatNumber(w.hourly_rate)}/jam</span>
+								</div>
+							`).join('')}
+						</div>
+						<div class="batch-subtotal">Subtotal: Rp ${formatNumber(subtotal)}</div>
+					</div>
+				`;
+			});
+
+			document.getElementById('batchList').innerHTML = html;
+			updateGlobalSummary();
+		}
+
+		function removeBatch(batchIdx) {
+			if (confirm('Hapus batch ini?')) {
+				const batch = state.batches[batchIdx];
+				state.batches.splice(batchIdx, 1);
+				renderBatches();
+				updateFabMain();
+				showToast('info', 'Batch dihapus');
+			}
+		}
+
+		function updateFabMain() {
+			const fabMain = document.getElementById('fabMain');
+			const fabMainIcon = document.getElementById('fabMainIcon');
+			const fabCount = document.getElementById('fabCount');
+			const fabPriceTag = document.getElementById('fabPriceTag');
+			const fabReset = document.getElementById('fabReset');
+
+			if (state.isPopupOpen) {
+				fabMain.closest('.fab-stack').style.display = 'none';
+				return;
+			}
+			fabMain.closest('.fab-stack').style.display = '';
+
+			const hasItems = state.batches.length > 0;
+
+			if (!hasItems) {
+				fabMainIcon.className = 'fas fa-sliders-h';
+				fabMain.classList.remove('ready-state');
+				fabCount.style.display = 'none';
+				fabPriceTag.classList.remove('show');
+				fabReset.classList.remove('show');
+				return;
+			}
+
+			fabReset.classList.add('show');
+			fabMainIcon.className = 'fas fa-arrow-right';
+			fabMain.classList.add('ready-state');
+
+			const totalWorkers = state.batches.reduce((sum, b) => sum + (b.workers?.length || 0), 0);
+			fabCount.style.display = 'flex';
+			fabCount.textContent = totalWorkers;
+
+			let totalBiaya = 0;
+			state.batches.forEach(batch => {
+				if (batch.workers && Array.isArray(batch.workers)) {
+					totalBiaya += batch.workers.reduce((sum, w) => sum + (w.hourly_rate * batch.duration), 0);
+				}
+			});
+			fabPriceTag.textContent = `Rp ${formatNumber(totalBiaya)}`;
+			fabPriceTag.classList.add('show');
+		}
+
+		// Filter popup handlers
+		function renderFilterPopup() {
+		 const popup = document.getElementById('filterPopup');
+		 const scrollArea = popup.querySelector('.popup-full-scroll');
+		 
+		 const dayNames = ['Min','Sen','Sel','Rab','Kam','Jum','Sab'];
+		 const monthNames = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Ags','Sep','Okt','Nov','Des'];
+		 
+		 // Generate dates for next 60 days
+		 const dates = Array.from({ length: 60 }, (_, i) => {
+		 const d = new Date();
+		 d.setDate(d.getDate() + i);
+		 return {
+		 iso: d.toISOString().split('T')[0],
+		 dayName: i === 0 ? 'Hari ini' : dayNames[d.getDay()],
+		 dayNum: d.getDate(),
+		 month: monthNames[d.getMonth()],
+		 isToday: i === 0
+		 };
+		 });
+
+		 const durationOptions = [
+		 { value: '4', label: 'Setengah Hari', desc: '08:00 – 12:00 (4 jam)' },
+		 { value: '8', label: '1 Hari Penuh', desc: '08:00 – 17:00 (8 jam)' },
+		 ];
+
+		 const currentSubcategories = state.subcategories[state.selectedCategory] || [];
+
+		 scrollArea.innerHTML = `
+		 <!-- DATE RAIL -->
+		 <div class="filter-group">
+		 <span class="flabel"><i class="fas fa-calendar-alt"></i> Pilih Tanggal <span class="req">*</span></span>
+		 <div class="date-rail">
+		 ${dates.map(date => `
+		 <div 
+		 class="date-pill ${date.isToday ? 'today' : ''} ${state.selectedDate === date.iso ? 'active' : ''}"
+		 data-date="${date.iso}"
+		 onclick="selectDate('${date.iso}')"
+		 >
+		 <span class="dname">${date.dayName}</span>
+		 <span class="dnum">${date.dayNum}</span>
+		 <span class="dmon">${date.month}</span>
+		 </div>
+		 `).join('')}
+		 </div>
+		 <div class="selected-info">
+		 <span class="item">📅 <strong>${state.selectedDate || '-'}</strong></span>
+		 </div>
+		 </div>
+
+		 <!-- SKILL CATEGORY + SUB SKILL -->
+		 <div class="filter-group">
+		 <span class="flabel"><i class="fas fa-tools"></i> Kategori & Keahlian <span class="req">*</span></span>
+		 <div class="category-rail">
+		 ${state.categories.map(cat => `
+		 <button 
+		 class="category-pill ${state.selectedCategory === cat ? 'active' : ''}"
+		 onclick="selectCategory('${cat}')"
+		 >
+		 ${cat}
+		 </button>
+		 `).join('')}
+		 </div>
+		 <div class="skill-sub-rail">
+		 ${currentSubcategories.map(sub => `
+		 <button 
+		 class="skill-sub-pill ${state.selectedSubcategory === sub ? 'active' : ''}"
+		 onclick="selectSubcategory('${sub}')"
+		 >
+		 ${sub}
+		 </button>
+		 `).join('')}
+		 </div>
+		 <div class="selected-info">
+		 <span class="item">🔧 <strong>${state.selectedSubcategory || '-'}</strong></span>
+		 </div>
+		 </div>
+
+		 <!-- DURATION -->
+		 <div class="filter-group">
+		 <span class="flabel"><i class="fas fa-clock"></i> Durasi Kerja</span>
+		 <div class="duration-modes">
+		 ${durationOptions.map(opt => `
+		 <div 
+		 class="dmode ${state.selectedDuration === opt.value ? 'active' : ''}"
+		 onclick="selectDuration('${opt.value}')"
+		 >
+		 <div class="left">
+		 <i class="fas fa-clock"></i>
+		 <div class="ltext">
+		 <div class="lt1">${opt.label}</div>
+		 <div class="lt2">${opt.desc}</div>
+		 </div>
+		 </div>
+		 <div class="radio">
+		 <div class="fill"></div>
+		 </div>
+		 </div>
+		 `).join('')}
+		 </div>
+		 <div class="selected-info">
+		 <span class="item">⏱ <strong>${state.selectedDuration}</strong> jam</span>
+		 </div>
+		 </div>
+
+		 <!-- JUMLAH RAIL -->
+		 <div class="filter-group">
+		 <span class="flabel"><i class="fas fa-users"></i> Jumlah Dibutuhkan</span>
+		 <div class="jumlah-rail">
+		 ${Array.from({ length: 10 }, (_, i) => i + 1).map(num => `
+		 <div 
+		 class="jumlah-pill ${state.selectedJumlah === num ? 'active' : ''}"
+		 onclick="selectJumlah(${num})"
+		 >
+		 ${num}
+		 </div>
+		 `).join('')}
+		 </div>
+		 <div class="selected-info">
+		 <span class="item">👥 <strong>${state.selectedJumlah}</strong> orang</span>
+		 </div>
+		 </div>
+		 `;
+
+		 // Scroll date rail to today
+		 setTimeout(() => {
+		 const dateRail = scrollArea.querySelector('.date-rail');
+		 if (dateRail && dateRail.scrollWidth > dateRail.clientWidth) {
+		 dateRail.scrollLeft = 60;
+		 }
+		 }, 100);
+		}
+
+		function openFilter() {
+		 state.isPopupOpen = true;
+		 renderFilterPopup();
+		 const popup = document.getElementById('filterPopup');
+		 popup.classList.add('active');
+		 document.getElementById('popupFabStack').style.display = 'flex';
+		 document.body.style.overflow = 'hidden';
+		 updateFabMain();
+		}
+
+		function closeFilter() {
+		 state.isPopupOpen = false;
+		 const popup = document.getElementById('filterPopup');
+		 popup.classList.remove('active');
+		 document.getElementById('popupFabStack').style.display = 'none';
+		 document.body.style.overflow = '';
+		 updateFabMain();
+		}
+
+		// Selection handlers (global functions for onclick)
+	 window.selectDate = function(date) {
+		 state.selectedDate = date;
+		 renderFilterPopup();
+		};
+
+		window.selectCategory = function(category) {
+		 state.selectedCategory = category;
+		 state.selectedSubcategory = state.subcategories[category]?.[0] || '';
+		 renderFilterPopup();
+		};
+
+		window.selectSubcategory = function(subcategory) {
+		 state.selectedSubcategory = subcategory;
+		 renderFilterPopup();
+		};
+
+		window.selectDuration = function(duration) {
+		 state.selectedDuration = duration;
+		 renderFilterPopup();
+		};
+
+		window.selectJumlah = function(jumlah) {
+		 state.selectedJumlah = jumlah;
+		 renderFilterPopup();
+		};
+
+		// Apply filter and lock workers
+		async function applyFilter() {
+			if (!state.selectedDate) {
+				showToast('warning', 'Pilih tanggal');
+				return;
+			}
+
+			if (!state.selectedSubcategory) {
+				showToast('warning', 'Pilih keahlian');
+				return;
+			}
+
+			const filter = {
+				date: state.selectedDate,
+				skillCategory: state.selectedCategory,
+				skillSubcategory: state.selectedSubcategory,
+				startTime: '08:00',
+				duration: state.selectedDuration,
+				jumlah: state.selectedJumlah,
+			};
+
+			try {
+				showToast('info', 'Mencari buruh...');
+				
+				// Release previous lock if filter changed
+				if (state.currentFilter) {
+					const oldHash = generateFilterHash(state.currentFilter);
+					const newHash = generateFilterHash(filter);
+					if (oldHash !== newHash) {
+						await releaseWorkers(oldHash);
+					}
+				}
+
+				// Fetch available workers
+				const workers = await fetchWorkers(filter);
+				
+				if (workers.length === 0) {
+					showToast('warning', 'Tidak ada buruh tersedia untuk kriteria ini');
+					return;
+				}
+
+				// Lock the workers
+				const lockResult = await lockWorkers(filter, workers);
+				
+				if (lockResult.locked_workers.length === 0) {
+					showToast('warning', 'Buruh sudah dipesan oleh user lain');
+					return;
+				}
+
+				// Filter only successfully locked workers
+				const lockedWorkers = workers.filter(w => lockResult.locked_workers.includes(w.id));
+
+				// Create batch
+				const batch = {
+					id: Date.now(),
+					date: filter.date,
+					skill_category: filter.skillCategory,
+					skill_subcategory: filter.skillSubcategory,
+					duration: parseInt(filter.duration),
+					workers: lockedWorkers,
+					filter_hash: generateFilterHash(filter),
+				};
+
+				state.batches.push(batch);
+				state.currentFilter = filter;
+
+				renderBatches();
+				closeFilter();
+				updateFabMain();
+				showToast('success', `${lockedWorkers.length} buruh berhasil dipesan!`);
+
+			} catch (error) {
+				console.error('Error applying filter:', error);
+				showToast('error', 'Gagal mencari buruh');
+			}
+		}
+
+		// Initialize app
+		async function initApp() {
+			initSession();
+			
+			// Set default date to today
+			const today = new Date().toISOString().split('T')[0];
+			state.selectedDate = today;
+
+			// Setup event listeners
+			document.getElementById('fabMain').addEventListener('click', () => {
+				if (state.batches.length === 0) {
+					openFilter();
+				} else {
+					checkout();
+				}
+			});
+
+			document.getElementById('fabReset').addEventListener('click', resetAll);
+			document.getElementById('addBatchBtn').addEventListener('click', openFilter);
+			document.getElementById('closeSuccessBtn').addEventListener('click', closeSuccess);
+
+			// Setup filter popup event listeners
+			setupFilterPopupListeners();
+
+			// Release locks on page unload
+			window.addEventListener('beforeunload', async () => {
+				if (state.currentFilter) {
+					await releaseWorkers(generateFilterHash(state.currentFilter));
+				}
+			});
+		}
+
+		function setupFilterPopupListeners() {
+		 document.getElementById('applyFilterBtn').addEventListener('click', applyFilter);
+		 document.getElementById('cancelFilterBtn').addEventListener('click', closeFilter);
+		 document.getElementById('closePopupBtn').addEventListener('click', closeFilter);
+		}
+
+		function resetAll() {
+			if (state.batches.length === 0) {
+				showToast('info', 'Tidak ada batch');
+				return;
+			}
+			if (confirm('Hapus semua batch?')) {
+				// Release all locks
+				if (state.currentFilter) {
+					releaseWorkers(generateFilterHash(state.currentFilter));
+				}
+				state.batches = [];
+				state.currentFilter = null;
+				renderBatches();
+				updateFabMain();
+				showToast('info', 'Semua batch dihapus');
+			}
+		}
+
+		async function checkout() {
+			if (state.batches.length === 0) {
+				showToast('warning', 'Tidak ada batch');
+				return;
+			}
+
+			try {
+				let bookingPromises = [];
+				let totalBiaya = 0;
+
+				state.batches.forEach(batch => {
+					batch.workers.forEach(worker => {
+						const subtotal = worker.hourly_rate * batch.duration;
+						totalBiaya += subtotal;
+
+						const endTime = calculateEndTime('08:00', batch.duration);
+						
+						bookingPromises.push(createBooking(worker.id, {
+							booking_date: batch.date,
+							start_time: '08:00',
+							end_time: endTime,
+							duration_hours: batch.duration,
+							total_price: subtotal,
+							filter_hash: batch.filter_hash,
+						}));
+					});
+				});
+
+				await Promise.all(bookingPromises);
+
+				// Show success
+				const orderId = 'P' + Date.now().toString().slice(-6);
+				document.getElementById('successOrderId').textContent = orderId;
+				document.getElementById('successDesc').textContent = `${state.batches.length} batch berhasil dipesan. Total Rp ${formatNumber(totalBiaya)}.`;
+				document.getElementById('successOverlay').classList.add('active');
+
+				// Clear state
+				state.batches = [];
+				state.currentFilter = null;
+				renderBatches();
+				updateFabMain();
+
+			} catch (error) {
+				console.error('Error during checkout:', error);
+				showToast('error', 'Gagal membuat pesanan');
+			}
+		}
+
+		function calculateEndTime(startTime, durationHours) {
+			const [hours, minutes] = startTime.split(':').map(Number);
+			const totalMinutes = hours * 60 + minutes + (durationHours * 60);
+			const endHours = Math.floor(totalMinutes / 60) % 24;
+			const endMinutes = totalMinutes % 60;
+			return `${endHours.toString().padStart(2, '0')}:${endMinutes.toString().padStart(2, '0')}`;
+		}
+
+		function closeSuccess() {
+			document.getElementById('successOverlay').classList.remove('active');
+		}
+
+		// Start app
+		document.addEventListener('DOMContentLoaded', initApp);
+	</script>
+</Layout>

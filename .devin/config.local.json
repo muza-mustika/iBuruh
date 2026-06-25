@@ -1,0 +1,46 @@
+{
+  "permissions": {
+    "allow": [
+      "Exec(npm create)",
+      "Exec(mkdir)",
+      "Exec(rm)",
+      "Exec(npm install)",
+      "Exec(python3)",
+      "Exec(curl)",
+      "Exec(ls)",
+      "Exec(chmod)",
+      "Exec(devin mcp)",
+      "Exec(npx)",
+      "Exec(npm run)",
+      "Exec(wrangler whoami)",
+      "Exec(cp)",
+      "Exec(find src)",
+      "Exec(find)",
+      "Exec(git status)",
+      "Exec(git init)",
+      "Exec(git add)"
+    ]
+  },
+  "mcpServers": {
+    "cloudflare": {
+      "url": "https://mcp.cloudflare.com/mcp",
+      "transport": "http"
+    },
+    "cloudflare-docs": {
+      "url": "https://docs.mcp.cloudflare.com/mcp",
+      "transport": "http"
+    },
+    "cloudflare-bindings": {
+      "url": "https://bindings.mcp.cloudflare.com/mcp",
+      "transport": "http"
+    },
+    "cloudflare-builds": {
+      "url": "https://builds.mcp.cloudflare.com/mcp",
+      "transport": "http"
+    },
+    "cloudflare-observability": {
+      "url": "https://observability.mcp.cloudflare.com/mcp",
+      "transport": "http"
+    }
+  }
+}

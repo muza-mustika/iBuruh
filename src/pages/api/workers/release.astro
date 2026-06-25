@@ -1,0 +1,34 @@
+export async function POST({ request, locals }) {
+  const db = locals.runtime?.env?.DB || locals.env?.DB;
+  if (!db) {
+    return new Response('Database not available', { status: 500 });
+  }
+
+  try {
+    const body = await request.json();
+    const { session_id, filter_hash } = body;
+
+    if (!session_id) {
+      return new Response('Missing session_id', { status: 400 });
+    }
+
+    if (filter_hash) {
+      // Release specific filter hash locks
+      await db.prepare(
+        'DELETE FROM temporary_bookings WHERE session_id = ? AND filter_hash = ?'
+      ).bind(session_id, filter_hash).run();
+    } else {
+      // Release all locks for this session
+      await db.prepare(
+        'DELETE FROM temporary_bookings WHERE session_id = ?'
+      ).bind(session_id).run();
+    }
+
+    return new Response(JSON.stringify({ success: true }), {
+      headers: { 'Content-Type': 'application/json' },
+    });
+  } catch (error) {
+    console.error('Error releasing workers:', error);
+    return new Response('Error releasing workers', { status: 500 });
+  }
+}
