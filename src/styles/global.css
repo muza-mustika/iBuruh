@@ -787,3 +787,42 @@ body{
   transition:all 0.15s ease;
 }
 .success-card .btn-close:hover{background:var(--work);}
+.success-card .btn-done{
+  width:100%;padding:13px;border-radius:12px;border:none;
+  background:var(--ink);color:var(--paper);font-weight:700;font-size:14px;
+  cursor:pointer;font-family:var(--font-body);
+  transition:all 0.15s ease;
+}
+.success-card .btn-done:hover{background:var(--work);}
+/* Date pill multi-select range styling */
+.date-pill.range-start{
+  border-radius:12px 0 0 12px;
+  background:var(--work);color:#fff;
+}
+.date-pill.range-mid{
+  border-radius:0;
+  background:var(--work-tint);color:var(--work-deep);
+  border-color:transparent;
+}
+.date-pill.range-end{
+  border-radius:0 12px 12px 0;
+  background:var(--work);color:#fff;
+}
+.date-pill.range-start .dname,
+.date-pill.range-start .dnum,
+.date-pill.range-start .dmon,
+.date-pill.range-end .dname,
+.date-pill.range-end .dnum,
+.date-pill.range-end .dmon{ color:#fff; }
+.date-pill.range-mid .dname,
+.date-pill.range-mid .dnum,
+.date-pill.range-mid .dmon{ color:var(--work-deep); }
+
+.success-card .btn-wa{
+  width:100%;padding:14px;border-radius:12px;border:none;
+  background:#25D366;color:#fff;font-weight:700;font-size:14px;
+  cursor:pointer;font-family:var(--font-body);margin-bottom:10px;
+  text-decoration:none;display:flex;align-items:center;justify-content:center;gap:8px;
+  transition:all 0.15s ease;
+}
+.success-card .btn-wa:hover{background:#1ebe5d;}
