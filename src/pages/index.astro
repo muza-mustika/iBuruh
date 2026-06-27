@@ -680,7 +680,7 @@ const subcategoriesData = JSON.stringify(subcategories);
                         if (sumEl) sumEl.innerHTML = `<strong>${val}</strong> orang`;
                 };
 
-                // Apply filter and lock workers
+                // Apply filter — only fetch workers, lock happens at checkout
                 async function applyFilter() {
                         if (state.selectedDates.length === 0) {
                                 showToast('warning', 'Pilih minimal satu tanggal');
@@ -704,46 +704,34 @@ const subcategoriesData = JSON.stringify(subcategories);
 
                         try {
                                 showToast('info', 'Mencari buruh...');
-                                
-                                // Release previous lock if filter changed
-                                if (state.currentFilter) {
-                                        const oldHash = generateFilterHash(state.currentFilter);
-                                        const newHash = generateFilterHash(filter);
-                                        if (oldHash !== newHash) {
-                                                await releaseWorkers(oldHash);
-                                        }
-                                }
 
-                                // Fetch available workers
+                                // Fetch available workers (no locking yet — lock on checkout)
                                 const workers = await fetchWorkers(filter);
-                                
+
                                 if (workers.length === 0) {
                                         showToast('warning', 'Tidak ada buruh tersedia untuk kriteria ini');
                                         return;
                                 }
 
-                                // Lock the workers
-                                const lockResult = await lockWorkers(filter, workers);
-                                
-                                if (lockResult.locked_workers.length === 0) {
-                                        showToast('warning', 'Buruh sudah dipesan oleh user lain');
+                                const filterHash = generateFilterHash(filter);
+
+                                // Cek duplikat batch (filter hash + tanggal sama)
+                                const duplicate = state.batches.find(b => b.filter_hash === filterHash);
+                                if (duplicate) {
+                                        showToast('warning', 'Batch dengan kriteria sama sudah ada');
                                         return;
                                 }
 
-                                // Filter only successfully locked workers
-                                const lockedWorkers = workers.filter(w => lockResult.locked_workers.includes(w.id));
-
-                                // Create batch (including nano_id for WA confirmation)
                                 const batch = {
                                         id: Date.now(),
+                                        dates: filter.dates,
                                         date: filter.date,
                                         skill_category: filter.skillCategory,
                                         skill_subcategory: filter.skillSubcategory,
                                         duration: parseInt(filter.duration),
-                                        workers: lockedWorkers,
-                                        filter_hash: generateFilterHash(filter),
-                                        nano_id: lockResult.nano_id || null,
-                                        expires_at: lockResult.expires_at || null,
+                                        workers,
+                                        filter_hash: filterHash,
+                                        filter_params: filter,
                                 };
 
                                 state.batches.push(batch);
@@ -752,7 +740,9 @@ const subcategoriesData = JSON.stringify(subcategories);
                                 renderBatches();
                                 closeFilter();
                                 updateFabMain();
-                                showToast('success', `${lockedWorkers.length} buruh berhasil dipesan!`);
+
+                                const dayLabel = filter.dates.length > 1 ? `${filter.dates.length} hari` : filter.date;
+                                showToast('success', `${workers.length} buruh ditemukan untuk ${dayLabel}`);
 
                         } catch (error) {
                                 console.error('Error applying filter:', error);
@@ -824,40 +814,54 @@ const subcategoriesData = JSON.stringify(subcategories);
                         }
 
                         try {
-                                let totalBiaya = 0;
-                                const nanoIds = [];
+                                showToast('info', 'Mengunci buruh & membuat transaksi...');
 
-                                state.batches.forEach(batch => {
-                                        if (batch.workers && Array.isArray(batch.workers)) {
-                                                totalBiaya += batch.workers.reduce((sum, w) => sum + (w.hourly_rate * batch.duration), 0);
-                                        }
-                                        if (batch.nano_id) nanoIds.push(batch.nano_id);
+                                // Build multi-batch payload for ONE lock call
+                                const batchesPayload = state.batches.map(batch => ({
+                                        worker_ids: batch.workers.map(w => w.id),
+                                        filter_params: batch.filter_params,
+                                        filter_hash: batch.filter_hash,
+                                }));
+
+                                const lockResp = await fetch('/api/workers/lock', {
+                                        method: 'POST',
+                                        headers: { 'Content-Type': 'application/json' },
+                                        body: JSON.stringify({
+                                                session_id: state.sessionId,
+                                                batches: batchesPayload,
+                                        }),
                                 });
 
-                                // Build WA message: hanya nano ID dipisah spasi
-                                const waMessage = nanoIds.join(' ');
-                                const waNumber = '6287791152650';
-                                const waUrl = `https://wa.me/${waNumber}?text=${encodeURIComponent(waMessage)}`;
+                                const lockResult = await lockResp.json();
 
-                                // Populate success overlay with nano IDs and WA link
-                                const orderId = nanoIds.length > 0 ? nanoIds[0] : ('P' + Date.now().toString().slice(-6));
-                                document.getElementById('successOrderId').textContent = orderId;
-                                document.getElementById('successDesc').textContent = `${state.batches.length} batch dikunci. Total Rp ${formatNumber(totalBiaya)}. Kirim token ke WhatsApp untuk konfirmasi.`;
-
-                                // Build nano ID list display
-                                const nanoListEl = document.getElementById('successNanoList');
-                                if (nanoListEl) {
-                                        if (nanoIds.length > 1) {
-                                                nanoListEl.innerHTML = nanoIds.map((n, i) =>
-                                                        `<div style="margin:2px 0;font-size:12px;opacity:.8;">Batch #${i+1}: <strong>${n}</strong></div>`
-                                                ).join('');
-                                                nanoListEl.style.display = 'block';
-                                        } else {
-                                                nanoListEl.style.display = 'none';
-                                        }
+                                if (!lockResult.success || !lockResult.nano_id) {
+                                        showToast('error', lockResult.message || 'Gagal mengunci buruh — coba lagi');
+                                        return;
                                 }
 
-                                // Show WA button
+                                const nanoId = lockResult.nano_id;
+                                const totalBiaya = lockResult.total_price || 0;
+                                const batchCount = lockResult.batch_count || state.batches.length;
+                                const totalWorkers = state.batches.reduce((s, b) => s + (b.workers?.length || 0), 0);
+
+                                // WA message — satu kode untuk semua batch
+                                const waNumber = '6287791152650';
+                                const lines = [
+                                        `Konfirmasi Pesanan iBuruh`,
+                                        `Kode: *${nanoId}*`,
+                                        ``,
+                                        `📦 ${batchCount} batch pekerjaan`,
+                                        `👷 ${totalWorkers} buruh total`,
+                                        `💰 Total: Rp ${formatNumber(totalBiaya)}`,
+                                ];
+                                const waUrl = `https://wa.me/${waNumber}?text=${encodeURIComponent(lines.join('\n'))}`;
+
+                                // Populate overlay — 1 kode untuk semua
+                                document.getElementById('successOrderId').textContent = nanoId;
+                                document.getElementById('successDesc').textContent =
+                                        `${batchCount} batch dikunci • ${totalWorkers} buruh • Total Rp ${formatNumber(totalBiaya)}`;
+                                document.getElementById('successNanoList').style.display = 'none';
+
                                 const waBtnEl = document.getElementById('successWaBtn');
                                 if (waBtnEl) {
                                         waBtnEl.href = waUrl;
