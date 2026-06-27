@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS bookings (
   status TEXT DEFAULT 'pending', -- pending, confirmed, completed, cancelled
   session_id TEXT NOT NULL, -- To track filter sessions
   filter_hash TEXT NOT NULL, -- Hash of the filter parameters
+  nano_id TEXT, -- Linked pending transaction nano ID
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (worker_id) REFERENCES workers(id),
@@ -47,6 +48,25 @@ CREATE TABLE IF NOT EXISTS temporary_bookings (
   UNIQUE(worker_id, session_id)
 );
 
+-- Pending transactions table (nano ID token for WA confirmation)
+CREATE TABLE IF NOT EXISTS pending_transactions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  nano_id TEXT NOT NULL UNIQUE,
+  session_id TEXT NOT NULL,
+  worker_ids TEXT NOT NULL,      -- JSON array of worker IDs
+  booking_date TEXT NOT NULL,
+  start_time TEXT NOT NULL,
+  end_time TEXT NOT NULL,
+  duration_hours INTEGER NOT NULL,
+  skill_category TEXT NOT NULL,
+  skill_subcategory TEXT,
+  total_price INTEGER NOT NULL,
+  filter_hash TEXT NOT NULL,
+  status TEXT DEFAULT 'pending', -- pending, confirmed, expired, cancelled
+  expires_at DATETIME NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
+
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_workers_skill ON workers(skill_category, skill_subcategory);
 CREATE INDEX IF NOT EXISTS idx_workers_available ON workers(available);
@@ -56,6 +76,10 @@ CREATE INDEX IF NOT EXISTS idx_bookings_status ON bookings(status);
 CREATE INDEX IF NOT EXISTS idx_temp_bookings_worker ON temporary_bookings(worker_id);
 CREATE INDEX IF NOT EXISTS idx_temp_bookings_session ON temporary_bookings(session_id);
 CREATE INDEX IF NOT EXISTS idx_temp_bookings_expires ON temporary_bookings(expires_at);
+CREATE INDEX IF NOT EXISTS idx_pending_nano_id ON pending_transactions(nano_id);
+CREATE INDEX IF NOT EXISTS idx_pending_session ON pending_transactions(session_id);
+CREATE INDEX IF NOT EXISTS idx_pending_status ON pending_transactions(status);
+CREATE INDEX IF NOT EXISTS idx_pending_expires ON pending_transactions(expires_at);
 
 -- Insert sample workers
 INSERT INTO workers (name, skill_category, skill_subcategory, hourly_rate, phone, rating, total_jobs) VALUES
